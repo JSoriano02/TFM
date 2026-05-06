@@ -1,0 +1,10 @@
+# Archivos y carpetas de ejecución de Nextflow
+work/
+.nextflow/
+.nextflow.log*
+results/
+raw_data/
+
+# Archivos de sistema y editores
+.DS_Store
+.vscode/
