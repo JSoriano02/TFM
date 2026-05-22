@@ -1,18 +1,34 @@
+// main.nf
 nextflow.enable.dsl=2
 
-// Import the filtering module
-include { FILTER_MUTATIONS } from './modules/01_filter_data.nf'
+include { FILTER_MUTATIONS }  from './modules/01_filter_data.nf'
+include { CLEAN_STRUCTURE }   from './modules/02_clean_structure.nf'
+include { FOLDX_MUTAGENESIS } from './modules/03_mutagenesis.nf'
+include { PREPARE_MEEKO }     from './modules/04_prepare_meeko.nf'
+include { DOCKING_GNINA }     from './modules/05_docking_gnina.nf'
+include { EXTRACT_AND_REPORT }from './modules/06_analysis.nf'
 
-// Define input data parameters using the raw_dir from nextflow.config
 params.mutations_tsv = "${params.raw_dir}/DYRK1B_mutations.tsv"
 
 workflow {
-    // Create a channel that emits the downloaded TSV file
-    gdc_data_ch = Channel.fromPath(params.mutations_tsv)
-
-    // Run the filtering process
-    filtered_data = FILTER_MUTATIONS(gdc_data_ch)
+    // 1. Filter Top 3 Mutations
+    filtered_data = FILTER_MUTATIONS(file(params.mutations_tsv))
     
-    // Print a confirmation message to the terminal when finished
-    filtered_data.mutations_csv.view { "The filtered file is ready at: $it" }
+    // 2. Clean WT Protein
+    cleaned_wt = CLEAN_STRUCTURE(file(params.wt_pdb))
+    
+    // 3. Mutagenesis with FoldX (Outputs multiple PDBs)
+    mutant_pdbs = FOLDX_MUTAGENESIS(cleaned_wt, filtered_data)
+    
+    // Combine WT and Mutants into a single channel for preparation
+    all_receptors = cleaned_wt.concat(mutant_pdbs.flatten())
+    
+    // 4. Prepare Ligand and Receptors with Meeko
+    prepared = PREPARE_MEEKO(all_receptors, file(params.ligand))
+    
+    // 5. Docking with Gnina
+    docking_results = DOCKING_GNINA(prepared.receptor_pdbqt, prepared.ligand_pdbqt)
+    
+    // 6. PyMOL script & Thermodynamic justification
+    EXTRACT_AND_REPORT(docking_results.collect(), cleaned_wt)
 }

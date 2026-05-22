@@ -4,6 +4,7 @@ work/
 .nextflow.log*
 results/
 raw_data/
+bin/gnina
 
 # Archivos de sistema y editores
 .DS_Store
