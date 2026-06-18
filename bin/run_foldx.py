@@ -12,7 +12,7 @@ import argparse
 
 
 def parse_dif_file(dif_path: Path) -> list[float]:
-    """Extrae los valores de ΔΔG (total energy, columna 1) del fichero Dif_ de FoldX."""
+    """Extracts ΔΔG values (total energy, column 1) from a FoldX Dif_ output file."""
     ddg_values = []
     with open(dif_path) as f:
         for line in f:
@@ -34,9 +34,8 @@ def prepare_foldx_and_run(mutations_csv: str, wt_pdb: str, runs: int = 5) -> Non
     print(f"Repairing Wild-Type structure: {wt_pdb}...")
     subprocess.run(["foldx", "--command=RepairPDB", f"--pdb={wt_pdb}"], check=True)
 
-    # El PDB reparado recibe el sufijo _Repair
     repaired_pdb = wt_pdb.replace(".pdb", "_Repair.pdb")
-    repaired_base = Path(repaired_pdb).stem  # p. ej. physical_WT_Repair
+    repaired_base = Path(repaired_pdb).stem  # e.g. physical_WT_Repair
 
     summary_rows = []
 
@@ -54,7 +53,7 @@ def prepare_foldx_and_run(mutations_csv: str, wt_pdb: str, runs: int = 5) -> Non
         with open(f"individual_list_{pos}.txt", "w") as f:
             f.write(f"{foldx_mut};\n")
 
-        print(f"Building mutant {variant_name} ({runs} réplicas)...")
+        print(f"Building mutant {variant_name} ({runs} replicas)...")
         subprocess.run([
             "foldx",
             "--command=BuildModel",
@@ -63,18 +62,16 @@ def prepare_foldx_and_run(mutations_csv: str, wt_pdb: str, runs: int = 5) -> Non
             f"--numberOfRuns={runs}",
         ], check=True)
 
-        # --- Recopilar ΔΔG de todas las réplicas ---
-        # FoldX acumula filas en el mismo Dif_ si se llama varias veces desde el
-        # mismo directorio; se elimina tras leerlo para evitar conteos erróneos.
+        # FoldX appends rows to the same Dif_ file on repeated calls from the same directory;
+        # delete it after reading to avoid double-counting across mutants.
         dif_file = Path(f"Dif_{repaired_base}.fxout")
         ddg_values = []
         if dif_file.exists():
             ddg_values = parse_dif_file(dif_file)
             dif_file.unlink()
         else:
-            print(f"Advertencia: {dif_file} no encontrado para {variant_name}")
+            print(f"Warning: {dif_file} not found for {variant_name}")
 
-        # Escribir réplicas individuales
         replicas_csv = f"{variant_name}_ddg_replicas.csv"
         with open(replicas_csv, "w", newline="") as f:
             writer = csv.writer(f)
@@ -82,7 +79,6 @@ def prepare_foldx_and_run(mutations_csv: str, wt_pdb: str, runs: int = 5) -> Non
             for i, val in enumerate(ddg_values, 1):
                 writer.writerow([i, val])
 
-        # Calcular media y desviación estándar
         n = len(ddg_values)
         if n >= 2:
             mean = sum(ddg_values) / n
@@ -101,35 +97,34 @@ def prepare_foldx_and_run(mutations_csv: str, wt_pdb: str, runs: int = 5) -> Non
             "n_replicas": n,
         })
 
-        print(f"  {variant_name}: ΔΔG = {mean:.3f} ± {sd:.3f} kcal/mol ({n} réplicas)")
+        print(f"  {variant_name}: ΔΔG = {mean:.3f} ± {sd:.3f} kcal/mol ({n} replicas)")
 
-        # Renombrar las N réplicas al patrón *_mutant.pdb que Nextflow espera.
-        # FoldX con --numberOfRuns N genera {base}_1_0.pdb … {base}_1_{N-1}.pdb.
+        # Rename the N replicas to the *_mutant.pdb pattern expected by Nextflow.
+        # FoldX with --numberOfRuns N generates {base}_1_0.pdb … {base}_1_{N-1}.pdb.
         for i in range(runs):
             src = Path(f"{repaired_base}_1_{i}.pdb")
             dst = Path(f"{variant_name}_rep{i}_mutant.pdb")
             if src.exists():
                 shutil.move(str(src), str(dst))
-                print(f"  Réplica {i} guardada como {dst.name}")
+                print(f"  Replica {i} saved as {dst.name}")
             else:
-                print(f"  Advertencia: réplica {i} no encontrada ({src})")
+                print(f"  Warning: replica {i} not found ({src})")
 
-    # Escribir resumen global de todos los mutantes
     summary_csv = "foldx_ddg_summary.csv"
     with open(summary_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["variant", "ddg_mean", "ddg_sd", "n_replicas"])
         writer.writeheader()
         writer.writerows(summary_rows)
 
-    print(f"\nResumen ΔΔG guardado en {summary_csv}")
+    print(f"\nΔΔG summary saved to {summary_csv}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run FoldX Mutagenesis con réplicas.')
+    parser = argparse.ArgumentParser(description='Run FoldX mutagenesis with replicas.')
     parser.add_argument('-i', '--input', required=True, help='Mutations CSV')
     parser.add_argument('-p', '--pdb',   required=True, help='Cleaned WT PDB')
     parser.add_argument('-n', '--runs',  type=int, default=5,
-                        help='Número de réplicas FoldX BuildModel (default: 5)')
+                        help='Number of FoldX BuildModel replicas (default: 5)')
 
     args = parser.parse_args()
     prepare_foldx_and_run(args.input, args.pdb, args.runs)

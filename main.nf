@@ -18,15 +18,15 @@ workflow {
     // 2. Clean WT Protein
     cleaned_wt = CLEAN_STRUCTURE(file(params.wt_pdb))
 
-    // 0 (control). Validar el protocolo de docking redocking AZ191 sobre la WT cristalográfica
-    // Si RMSD > params.rmsd_threshold el proceso falla y el pipeline se detiene aquí.
+    // 0 (control). Validate the docking protocol by re-docking AZ191 onto the crystallographic WT.
+    // If RMSD > params.rmsd_threshold the process fails and the pipeline stops here.
     validation_out = REDOCK_VALIDATION(cleaned_wt, file(params.wt_pdb), file(params.ligand))
 
-    // Enganchar la mutagénesis a la validación: FOLDX_MUTAGENESIS no arranca hasta que
-    // REDOCK_VALIDATION haya completado con éxito.
+    // Gate mutagenesis on validation: FOLDX_MUTAGENESIS does not start until
+    // REDOCK_VALIDATION has completed successfully.
     gated_wt  = cleaned_wt.combine(validation_out.report).map { wt, _r -> wt }
 
-    // 3. Mutagenesis with FoldX (Outputs mutant PDBs + réplicas ΔΔG)
+    // 3. Mutagenesis with FoldX (outputs mutant PDBs + ΔΔG replicas)
     foldx_out     = FOLDX_MUTAGENESIS(gated_wt, filtered_data)
 
     // Combine WT and Mutants into a single channel for preparation
@@ -38,8 +38,8 @@ workflow {
     // 5. Docking with Gnina
     docking_results = DOCKING_GNINA(prepared.receptor_pdbqt, prepared.ligand_pdbqt)
     
-    // 6. Informe completo: afinidad GNINA, estabilidad FoldX, interacciones ProLIF,
-    //    clasificación y estadística con barras de error
+    // 6. Full report: GNINA binding affinity, FoldX stability, ProLIF interactions,
+    //    mutation classification and statistics with error bars
     EXTRACT_AND_REPORT(docking_results.collect(), cleaned_wt,
                        foldx_out.mutant_pdbs.collect(), foldx_out.ddg_summary,
                        foldx_out.ddg_replicas.collect())
