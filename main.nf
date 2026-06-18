@@ -1,6 +1,7 @@
 // main.nf
 nextflow.enable.dsl=2
 
+include { REDOCK_VALIDATION } from './modules/00_validate_docking.nf'
 include { FILTER_MUTATIONS }  from './modules/01_filter_data.nf'
 include { CLEAN_STRUCTURE }   from './modules/02_clean_structure.nf'
 include { FOLDX_MUTAGENESIS } from './modules/03_mutagenesis.nf'
@@ -16,12 +17,20 @@ workflow {
     
     // 2. Clean WT Protein
     cleaned_wt = CLEAN_STRUCTURE(file(params.wt_pdb))
-    
-    // 3. Mutagenesis with FoldX (Outputs multiple PDBs)
-    mutant_pdbs = FOLDX_MUTAGENESIS(cleaned_wt, filtered_data)
-    
+
+    // 0 (control). Validar el protocolo de docking redocking AZ191 sobre la WT cristalográfica
+    // Si RMSD > params.rmsd_threshold el proceso falla y el pipeline se detiene aquí.
+    validation_out = REDOCK_VALIDATION(cleaned_wt, file(params.wt_pdb), file(params.ligand))
+
+    // Enganchar la mutagénesis a la validación: FOLDX_MUTAGENESIS no arranca hasta que
+    // REDOCK_VALIDATION haya completado con éxito.
+    gated_wt  = cleaned_wt.combine(validation_out.report).map { wt, _r -> wt }
+
+    // 3. Mutagenesis with FoldX (Outputs mutant PDBs + réplicas ΔΔG)
+    foldx_out     = FOLDX_MUTAGENESIS(gated_wt, filtered_data)
+
     // Combine WT and Mutants into a single channel for preparation
-    all_receptors = cleaned_wt.concat(mutant_pdbs.flatten())
+    all_receptors = cleaned_wt.concat(foldx_out.mutant_pdbs.flatten())
     
     // 4. Prepare Ligand and Receptors with Meeko
     prepared = PREPARE_MEEKO(all_receptors, file(params.ligand))
@@ -29,6 +38,9 @@ workflow {
     // 5. Docking with Gnina
     docking_results = DOCKING_GNINA(prepared.receptor_pdbqt, prepared.ligand_pdbqt)
     
-    // 6. PyMOL script & Thermodynamic justification
-    EXTRACT_AND_REPORT(docking_results.collect(), cleaned_wt)
+    // 6. Informe completo: afinidad GNINA, estabilidad FoldX, interacciones ProLIF,
+    //    clasificación y estadística con barras de error
+    EXTRACT_AND_REPORT(docking_results.collect(), cleaned_wt,
+                       foldx_out.mutant_pdbs.collect(), foldx_out.ddg_summary,
+                       foldx_out.ddg_replicas.collect())
 }

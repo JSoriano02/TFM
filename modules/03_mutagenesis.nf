@@ -7,11 +7,13 @@ process FOLDX_MUTAGENESIS {
     path mutations_csv
 
     output:
-    path "*_mutant.pdb", emit: mutant_pdbs
+    path "*_mutant.pdb",          emit: mutant_pdbs
+    path "*_ddg_replicas.csv",    emit: ddg_replicas
+    path "foldx_ddg_summary.csv", emit: ddg_summary
 
     script:
     """
-    # 1. Create a physical copy while simultaneously removing any Windows 
+    # 1. Create a physical copy while simultaneously removing any Windows
     # carriage returns (CRLF to LF) that crash FoldX
     tr -d '\\r' < ${wt_pdb} > ./physical_WT.pdb
 
@@ -31,8 +33,8 @@ process FOLDX_MUTAGENESIS {
         exit 1
     fi
     cp "\$ROTABASE_PATH" ./rotabase.txt
-    
-    # 5. Execute the python script passing the fixed physical copy
-    run_foldx.py -i ${mutations_csv} -p physical_WT.pdb
+
+    # 5. Execute the python script passing the fixed physical copy and number of replicas
+    run_foldx.py -i ${mutations_csv} -p physical_WT.pdb --runs ${params.foldx_runs}
     """
 }

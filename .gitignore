@@ -5,6 +5,9 @@ work/
 results/
 raw_data/
 bin/gnina
+.claude/
+MEJORAS_CLAUDE_CODE.md
+CLAUDE.md
 
 # Archivos de sistema y editores
 .DS_Store

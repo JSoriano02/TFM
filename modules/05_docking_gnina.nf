@@ -17,7 +17,9 @@ process DOCKING_GNINA {
         --center_x ${params.box_x} --center_y ${params.box_y} --center_z ${params.box_z} \
         --size_x ${params.box_size} --size_y ${params.box_size} --size_z ${params.box_size} \
         --cnn_scoring rescore \
-        --exhaustiveness 8 \
+        --seed ${params.seed} \
+        --exhaustiveness ${params.exhaustiveness} \
+        --num_modes ${params.num_modes} \
         --out ${receptor_pdbqt.baseName}_docked.sdf
     """
 }

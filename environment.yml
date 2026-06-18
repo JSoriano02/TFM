@@ -1,0 +1,36 @@
+name: tfm_dyrk1b
+# Entorno conda para el pipeline TFM DYRK1B/AZ191.
+# Versiones obtenidas de conda-forge el 2026-06-18.
+#
+# Herramientas externas gestionadas fuera de conda (deben estar en PATH):
+#   - FoldX 4           (licencia académica; https://foldxsuite.crg.eu)
+#   - GNINA master:e9cb230+ build Feb 11 2023  (en bin/gnina del proyecto)
+#
+# Uso:
+#   conda env create -f environment.yml
+#   conda activate tfm_dyrk1b
+#
+# Para exportar el entorno resuelto con build-strings exactos tras la creación:
+#   conda env export > environment_pinned.yml
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Intérprete
+  - python=3.12
+
+  # Preparación de estructuras para docking
+  - meeko=0.7.1          # preparación PDBQT (ligando y receptor); arrastra RDKit
+  - rdkit=2026.03.3      # quimioinformática; requerido por meeko, calc_rmsd.py y ProLIF
+  - pdb-tools=2.7.0      # manipulación de ficheros PDB (pdb_element, pdb_selhetatm)
+
+  # Análisis de interacciones proteína-ligando
+  - prolif=2.1.0         # fingerprints de interacción; arrastra MDAnalysis
+
+  # Estadística y visualización
+  - scipy=1.17.1         # Shapiro-Wilk, t-test, Wilcoxon
+  - matplotlib=3.11.0    # gráfico de barras con barras de error
+  - pandas=3.0.3         # tablas y CSV
+  - numpy>=2.0           # álgebra lineal; versión exacta resuelta por conda
