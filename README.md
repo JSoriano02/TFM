@@ -1,228 +1,266 @@
-# Predicción del efecto de mutaciones de DYRK1B sobre la unión del inhibidor AZ191
+# Predicting the Effect of DYRK1B Mutations on AZ191 Inhibitor Binding
 
-> Pipeline reproducible en **Nextflow** para evaluar, mediante mutagénesis *in silico* y *docking* molecular, cómo determinadas mutaciones de la quinasa **DYRK1B** afectan a la afinidad de unión del inhibidor **AZ191**.
+> A reproducible **Nextflow** pipeline that combines *in silico* mutagenesis (**FoldX**) and molecular docking (**GNINA**) to predict how point mutations in the kinase **DYRK1B** affect the binding affinity of the inhibitor **AZ191**.
 
----
-
-## Tabla de contenidos
-
-- [Descripción](#descripción)
-- [Contexto biológico](#contexto-biológico)
-- [Arquitectura del pipeline](#arquitectura-del-pipeline)
-- [Diagrama del flujo de trabajo](#diagrama-del-flujo-de-trabajo)
-- [Estructura del repositorio](#estructura-del-repositorio)
-- [Requisitos](#requisitos)
-- [Instalación](#instalación)
-- [Datos de entrada](#datos-de-entrada)
-- [Ejecución](#ejecución)
-- [Parámetros de configuración](#parámetros-de-configuración)
-- [Resultados](#resultados)
-- [Notas sobre reproducibilidad y hardware](#notas-sobre-reproducibilidad-y-hardware)
-- [Cómo citar](#cómo-citar)
-- [Licencia](#licencia)
-- [Autoría](#autoría)
+This repository contains the code developed for a **Master's Thesis (Trabajo de Fin de Máster, TFM)**.
 
 ---
 
-## Descripción
+## Table of contents
 
-Este repositorio contiene el código desarrollado como **Trabajo de Fin de Máster (TFM)**. Su objetivo es **predecir el efecto de mutaciones puntuales de la proteína DYRK1B sobre la unión de su inhibidor AZ191**, combinando dos aproximaciones computacionales complementarias:
-
-1. **Mutagénesis dirigida *in silico*** sobre la estructura proteica mediante **FoldX**, para generar los modelos estructurales de las variantes mutadas.
-2. **Acoplamiento molecular (*docking*)** del inhibidor AZ191 sobre la proteína silvestre (WT) y sus mutantes mediante **GNINA**, para estimar las energías de unión.
-
-Todo el flujo está orquestado con **Nextflow (DSL2)**, lo que garantiza la reproducibilidad, la modularidad y la posibilidad de reanudar ejecuciones interrumpidas (`-resume`).
-
----
-
-## Contexto biológico
-
-**DYRK1B** (*Dual-specificity tyrosine-phosphorylation-regulated kinase 1B*) es una quinasa implicada en la regulación del ciclo celular, la quiescencia y la supervivencia celular, y constituye una diana terapéutica de interés en oncología y enfermedades metabólicas. **AZ191** es un inhibidor selectivo de DYRK1B.
-
-Las **mutaciones en el dominio quinasa** pueden alterar la geometría del sitio de unión y, en consecuencia, modificar la afinidad del inhibidor —un mecanismo frecuente de resistencia farmacológica. Este pipeline permite **cuantificar, de forma computacional y a priori, ese impacto** sobre la afinidad de unión, priorizando las variantes de mayor relevancia.
-
----
-
-## Arquitectura del pipeline
-
-El flujo de trabajo está dividido en **seis módulos** independientes (`modules/`), encadenados en `main.nf`:
-
-| Nº | Módulo | Proceso | Función |
-|----|--------|---------|---------|
-| 01 | `01_filter_data.nf` | `FILTER_MUTATIONS` | Filtra y selecciona las mutaciones de interés (Top 3) a partir del fichero TSV de mutaciones. |
-| 02 | `02_clean_structure.nf` | `CLEAN_STRUCTURE` | Limpia y prepara la estructura PDB de la proteína silvestre (WT). |
-| 03 | `03_mutagenesis.nf` | `FOLDX_MUTAGENESIS` | Genera las estructuras mutadas con **FoldX** (una por mutación). |
-| 04 | `04_prepare_meeko.nf` | `PREPARE_MEEKO` | Prepara receptores y ligando para el *docking* con **Meeko** (formato PDBQT). |
-| 05 | `05_docking_gnina.nf` | `DOCKING_GNINA` | Ejecuta el *docking* del ligando AZ191 sobre WT y mutantes con **GNINA**. |
-| 06 | `06_analysis.nf` | `EXTRACT_AND_REPORT` | Extrae afinidades, genera el *script* de PyMOL y la justificación termodinámica del resultado. |
+- [Overview](#overview)
+- [Biological background](#biological-background)
+- [Scientific approach](#scientific-approach)
+- [Pipeline architecture](#pipeline-architecture)
+- [Workflow diagram](#workflow-diagram)
+- [Repository structure](#repository-structure)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Input data](#input-data)
+- [Running the pipeline](#running-the-pipeline)
+- [Configuration parameters](#configuration-parameters)
+- [Outputs and how to read them](#outputs-and-how-to-read-them)
+- [Methodological notes](#methodological-notes)
+- [Reproducibility](#reproducibility)
+- [Authorship](#authorship)
 
 ---
 
-## Diagrama del flujo de trabajo
+## Overview
+
+The goal of this project is to **predict the effect of point mutations in DYRK1B on the binding of its inhibitor AZ191**, using two complementary computational approaches that are reported separately:
+
+1. **Structure-based *in silico* mutagenesis** with **FoldX**, which generates the structural models of each mutant and estimates the change in folding stability (ΔΔG).
+2. **Molecular docking** of AZ191 onto the wild-type (WT) protein and each mutant with **GNINA**, which estimates binding affinity.
+
+The whole workflow is orchestrated with **Nextflow (DSL2)**, providing reproducibility, modularity, caching, and the ability to resume interrupted runs (`-resume`).
+
+A distinctive feature of this pipeline is its emphasis on **scientific rigour**: it includes a docking validation control (redocking), statistical replicates for stability estimates, fixed random seeds for reproducibility, and a protein–ligand interaction analysis to explain the results mechanistically.
+
+---
+
+## Biological background
+
+**DYRK1B** (*Dual-specificity tyrosine-phosphorylation-regulated kinase 1B*) is a kinase involved in cell-cycle regulation, quiescence, and cell survival. It is a therapeutic target of interest in oncology and metabolic disease. **AZ191** is a selective small-molecule inhibitor of DYRK1B.
+
+Mutations in the kinase domain can alter the geometry of the binding site and therefore modify inhibitor affinity — a common mechanism of drug resistance. This pipeline **quantifies that impact computationally and a priori**, distinguishing mutations that destabilise the protein fold from those that primarily disrupt inhibitor binding.
+
+---
+
+## Scientific approach
+
+For each mutation the pipeline answers two independent questions:
+
+- **Does the mutation destabilise the protein?** → measured by FoldX as ΔΔG of folding stability (kcal/mol), with 5 replicates per mutation to quantify uncertainty.
+- **Does the mutation impair inhibitor binding?** → measured by GNINA as the change in docking affinity relative to the WT (kcal/mol).
+
+Crucially, these two magnitudes are **kept separate** throughout the analysis (they measure different physical properties), and each mutation is finally **classified** by which of the two it affects: stability, binding, both, or neither.
+
+---
+
+## Pipeline architecture
+
+The workflow is split into independent **Nextflow processes**, defined in `main.nf` and `modules/`:
+
+| Process | Module | Role |
+|---------|--------|------|
+| `FILTER_MUTATIONS` | `modules/01_filter_data.nf` | Selects the mutations of interest from the input mutation table. |
+| `CLEAN_STRUCTURE` | `modules/02_clean_structure.nf` | Cleans and prepares the WT protein structure. |
+| `REDOCK_VALIDATION` | `modules/00_validate_docking.nf` | **Validation control:** redocks the crystallographic AZ191 onto the WT and computes RMSD vs the native pose. |
+| `FOLDX_MUTAGENESIS` | `modules/03_mutagenesis.nf` | Generates mutant structures with FoldX (5 replicates per mutation) and computes ΔΔG ± SD. |
+| `PREPARE_MEEKO` | `modules/04_prepare_meeko.nf` | Prepares receptors and ligand in PDBQT format (Meeko). |
+| `DOCKING_GNINA` | `modules/05_docking_gnina.nf` | Docks AZ191 onto WT and each mutant replica with GNINA. |
+| `EXTRACT_AND_REPORT` | `modules/06_analysis.nf` | Aggregates affinities, runs the interaction analysis (ProLIF), classifies mutations, computes statistics and generates the final report. |
+
+---
+
+## Workflow diagram
 
 ```mermaid
 flowchart TD
-    A[DYRK1B_mutations.tsv] --> B[01 · FILTER_MUTATIONS<br/>Selección Top 3 mutaciones]
-    C[DYRK1B_AZ191_complex.pdb<br/>Proteína WT] --> D[02 · CLEAN_STRUCTURE<br/>Limpieza de la estructura]
+    A[mutations table] --> B[FILTER_MUTATIONS<br/>Select target mutations]
+    C[DYRK1B-AZ191 complex PDB<br/>wild type] --> D[CLEAN_STRUCTURE<br/>Clean WT structure]
 
-    D --> E[03 · FOLDX_MUTAGENESIS<br/>Generación de mutantes]
+    C --> V[REDOCK_VALIDATION<br/>Redock crystal ligand + RMSD]
+    D --> V
+    V -. RMSD &lt; 2 A .-> OK([Protocol validated])
+
+    D --> E[FOLDX_MUTAGENESIS<br/>5 replicates per mutation<br/>delta-delta-G +/- SD]
     B --> E
 
-    D --> F{Combinar<br/>WT + Mutantes}
+    D --> F{WT + mutants}
     E --> F
 
-    G[AZ191.sdf<br/>Ligando] --> H[04 · PREPARE_MEEKO<br/>Preparación PDBQT]
+    G[AZ191 ligand SDF] --> H[PREPARE_MEEKO<br/>PDBQT preparation]
     F --> H
 
-    H --> I[05 · DOCKING_GNINA<br/>Docking molecular]
-    I --> J[06 · EXTRACT_AND_REPORT<br/>Análisis · PyMOL · Termodinámica]
+    H --> I[DOCKING_GNINA<br/>Affinity per structure]
+    I --> J[EXTRACT_AND_REPORT<br/>Aggregation - ProLIF -<br/>classification - statistics]
     D --> J
 
-    J --> K[(Resultados<br/>+ Informe)]
+    J --> K[(Final report<br/>+ tables + plot)]
 ```
 
 ---
 
-## Estructura del repositorio
+## Repository structure
 
 ```
 TFM/
-├── bin/                      # Scripts auxiliares (Python) invocados por los procesos
-├── modules/
+├── bin/                       # Python helper scripts called by the processes
+│   ├── run_foldx.py           #   FoldX replicate execution + delta-delta-G aggregation
+│   ├── calc_rmsd.py           #   RMSD calculation for redocking validation
+│   └── generate_report.py     #   Final report, interactions, statistics
+├── modules/                   # Nextflow processes (one per stage)
+│   ├── 00_validate_docking.nf
 │   ├── 01_filter_data.nf
 │   ├── 02_clean_structure.nf
 │   ├── 03_mutagenesis.nf
 │   ├── 04_prepare_meeko.nf
 │   ├── 05_docking_gnina.nf
 │   └── 06_analysis.nf
-├── raw_data/                 # Datos de entrada (no incluidos en el repositorio)
-│   ├── DYRK1B_mutations.tsv
+├── raw_data/                  # Input data (NOT version-controlled)
 │   ├── DYRK1B_AZ191_complex.pdb
 │   └── AZ191.sdf
-├── results/                  # Salidas generadas por el pipeline
-├── main.nf                   # Definición del workflow principal
-├── nextflow.config           # Configuración (recursos, parámetros, perfiles)
+├── results/                   # Pipeline outputs
+├── main.nf                    # Main workflow definition
+├── nextflow.config            # Resources, parameters, profiles
 ├── .gitignore
-└── README.md
+├── README.md
+└── LICENSE
 ```
 
-> **Nota:** el directorio `raw_data/` no se versiona en el repositorio por el tamaño y la naturaleza de los ficheros. Véase la sección [Datos de entrada](#datos-de-entrada).
+> Script names under `bin/` are indicative; adjust them to match your repository if they differ.
 
 ---
 
-## Requisitos
+## Requirements
 
-| Componente | Uso |
-|------------|-----|
-| [Nextflow](https://www.nextflow.io/) (≥ 22.x, DSL2) | Orquestación del pipeline |
-| [Conda](https://docs.conda.io/) / Mamba | Gestión de entornos |
-| [FoldX](https://foldxsuite.crg.eu/) | Mutagénesis *in silico* |
-| [GNINA](https://github.com/gnina/gnina) | *Docking* molecular (requiere **GPU**) |
-| [Meeko](https://github.com/forlilab/Meeko) | Preparación de receptores/ligandos |
-| [PyMOL](https://pymol.org/) | Visualización y generación de figuras |
-| Python ≥ 3.9 | Scripts de filtrado y análisis |
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| [Nextflow](https://www.nextflow.io/) (>= 22.x, DSL2) | Workflow orchestration | Tested with 25.10.x |
+| [Conda](https://docs.conda.io/) / Mamba | Environment management | `conda.enabled = true` |
+| [FoldX](https://foldxsuite.crg.eu/) 4 | *In silico* mutagenesis | Academic licence; requires `rotabase.txt` |
+| [GNINA](https://github.com/gnina/gnina) | Molecular docking | Requires CUDA-capable **GPU** |
+| [Meeko](https://github.com/forlilab/Meeko) | Receptor/ligand preparation | Produces PDBQT |
+| [ProLIF](https://prolif.readthedocs.io/) | Protein-ligand interaction fingerprints | Used in the analysis step |
+| [RDKit](https://www.rdkit.org/) | Cheminformatics (RMSD, bond orders) | |
+| SciPy / pandas / matplotlib / seaborn | Statistics and plotting | |
+| Python >= 3.10 | Helper scripts | |
 
-> ⚠️ **FoldX** requiere licencia académica (gratuita para uso no comercial). Debe instalarse manualmente y estar disponible en el `PATH`.
+> **FoldX** requires a free academic licence and must be installed manually and available on the `PATH`. The path to `rotabase.txt` is configurable.
+>
+> **Graphviz** is optional; install it if you want Nextflow to render the execution DAG and HTML reports (`sudo apt install graphviz`).
 
 ---
 
-## Instalación
+## Installation
 
 ```bash
-# 1. Clonar el repositorio
+# 1. Clone the repository
 git clone https://github.com/JSoriano02/TFM.git
 cd TFM
 
-# 2. Instalar Nextflow (si no está disponible)
+# 2. Install Nextflow if needed
 curl -s https://get.nextflow.io | bash
 
-# 3. Crear el entorno (las dependencias se gestionan vía Conda en el config)
-#    El pipeline está configurado con `conda.enabled = true`,
-#    por lo que Nextflow resolverá los entornos automáticamente.
+# 3. Dependencies are resolved automatically via Conda
+#    (conda.enabled = true in nextflow.config)
 ```
 
-> Se recomienda crear un fichero `environment.yml` con las dependencias exactas (Meeko, RDKit, PyMOL, etc.) para garantizar la reproducibilidad. *(Pendiente de añadir.)*
+FoldX and its `rotabase.txt` must be installed separately; set the path in `nextflow.config`.
 
 ---
 
-## Datos de entrada
+## Input data
 
-El pipeline espera los siguientes ficheros en `raw_data/`:
+The pipeline expects the following files in `raw_data/`:
 
-| Fichero | Descripción |
-|---------|-------------|
-| `DYRK1B_mutations.tsv` | Tabla de mutaciones a evaluar. |
-| `DYRK1B_AZ191_complex.pdb` | Estructura del complejo DYRK1B–AZ191 (proteína silvestre). |
-| `AZ191.sdf` | Estructura del ligando inhibidor AZ191. |
+| File | Description |
+|------|-------------|
+| `DYRK1B_AZ191_complex.pdb` | Crystallographic structure of the DYRK1B-AZ191 complex (wild type). |
+| `AZ191.sdf` | Structure of the AZ191 inhibitor (ligand). |
+| *mutation table* | Tabular list of mutations to evaluate. |
 
-Estos ficheros **no se incluyen** en el repositorio. Deben obtenerse de las fuentes correspondientes (p. ej. PDB, ChEMBL o el material suplementario del TFM) y colocarse en el directorio `raw_data/`.
+These files are **not included** in the repository. The crystallographic ligand is identified internally by its residue name (`QS0`); the complex also contains manganese ions (`MN`) and a phosphotyrosine residue (`PTR`), which are filtered out when the ligand is extracted.
 
 ---
 
-## Ejecución
+## Running the pipeline
 
 ```bash
-# Ejecución estándar (entorno local con GPU)
+# Standard run (local executor with GPU)
 nextflow run main.nf
 
-# Reanudar una ejecución interrumpida
+# Resume an interrupted run without recomputing completed steps
 nextflow run main.nf -resume
-
-# Especificando ficheros de entrada personalizados
-nextflow run main.nf \
-    --mutations_tsv raw_data/mis_mutaciones.tsv \
-    --wt_pdb        raw_data/mi_proteina.pdb \
-    --ligand        raw_data/mi_ligando.sdf
 ```
 
 ---
 
-## Parámetros de configuración
+## Configuration parameters
 
-Definidos en `nextflow.config` (modificables por línea de comandos con `--parámetro`):
+Defined in `nextflow.config` and overridable from the command line (`--parameter`):
 
-| Parámetro | Valor por defecto | Descripción |
-|-----------|-------------------|-------------|
-| `raw_dir` | `${projectDir}/raw_data` | Directorio de datos de entrada. |
-| `outdir` | `${projectDir}/results` | Directorio de resultados. |
-| `wt_pdb` | `DYRK1B_AZ191_complex.pdb` | Estructura de la proteína silvestre. |
-| `ligand` | `AZ191.sdf` | Ligando a acoplar. |
-| `box_x`, `box_y`, `box_z` | `-19.45`, `-26.67`, `1.54` | Centro de la caja de *docking* (coordenadas del sitio de unión). |
-| `box_size` | `20.0` | Tamaño de la caja de *docking* (Å). |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `raw_dir` | `${projectDir}/raw_data` | Input data directory. |
+| `outdir` | `${projectDir}/results` | Output directory. |
+| `ligand_resname` | `QS0` | Residue name of the crystallographic ligand. |
+| `foldx_runs` | `5` | FoldX replicates per mutation. |
+| `seed` | `42` | Random seed for GNINA (reproducibility). |
+| `exhaustiveness` | `16` | GNINA search exhaustiveness. |
+| `num_modes` | `9` | Number of docking poses generated. |
+| `rmsd_threshold` | `2.0` | Redocking validation threshold (Angstrom). |
+| `stability_threshold` | `0.5` | abs(delta-delta-G) relevance threshold (kcal/mol). |
+| `affinity_threshold` | `0.5` | abs(delta-affinity) relevance threshold (kcal/mol). |
 
-> ⚠️ Las coordenadas de la caja de *docking* deben **ajustarse al sitio de unión real** de la estructura empleada.
+The docking box is defined automatically via GNINA's `--autobox_ligand` around the crystallographic ligand position, which is more robust than hardcoded coordinates.
 
-**Recursos** (configurables en `nextflow.config`):
-
-- Ejecutor: `local` — 6 CPUs, 12 GB de memoria.
-- Los procesos etiquetados como `gpu_intensive` usan `maxForks = 1` para evitar saturar la memoria de la GPU (ajustado para una **NVIDIA RTX 2060**).
-
----
-
-## Resultados
-
-Tras la ejecución, el directorio `results/` contiene:
-
-- Estructuras mutadas generadas por FoldX.
-- Receptores y ligando preparados en formato PDBQT.
-- Poses de *docking* y afinidades de unión (WT y mutantes) calculadas por GNINA.
-- Un *script* de **PyMOL** para la visualización de las poses.
-- La **justificación termodinámica** comparativa entre la proteína silvestre y las mutantes.
+> Resources (executor, CPUs, memory) and the `gpu_intensive` label (`maxForks = 1`, tuned for a 6 GB GPU) are also set in `nextflow.config`.
 
 ---
 
-## Notas sobre reproducibilidad y hardware
+## Outputs and how to read them
 
-- El *docking* con GNINA requiere **GPU compatible con CUDA**. La configuración por defecto está ajustada para una **RTX 2060** (6 GB VRAM); en GPUs con más memoria puede aumentarse `maxForks`.
-- `errorStrategy = 'retry'` con `maxRetries = 1` permite tolerar fallos transitorios.
-- El uso de Nextflow permite reanudar ejecuciones con `-resume` sin repetir pasos ya completados.
+After a successful run, `results/` contains:
+
+| Output | What it tells you |
+|--------|-------------------|
+| `redocking_validation.txt` | RMSD of the redocked AZ191 vs the native pose. **Read this first:** RMSD < 2 Angstrom means the docking protocol is validated. |
+| `foldx_ddg_summary.csv` | delta-delta-G of folding stability per mutation (mean +/- SD over replicates). |
+| `*_ddg_replicas.csv` | Raw per-replicate delta-delta-G values for each mutation. |
+| `ddg_stability_plot.png` | Bar chart of delta-delta-G with error bars. |
+| `interactions_table.csv` | ProLIF protein-ligand interactions (H-bonds, hydrophobic contacts, etc.) for WT and mutants. |
+| Final report | Aggregated tables: binding affinity (GNINA), stability (FoldX), mutation classification, and statistics. |
+| ChimeraX/PyMOL script | Visualisation of the docked poses. |
+
+**Reading suggestion:** the WT structure is the reference row in every table. The *change* in affinity for each mutant relative to the WT is the key comparison — a positive delta-affinity means weaker binding. Combine this with the FoldX delta-delta-G to determine whether a mutation acts on stability, on binding, or on both.
 
 ---
 
-## Autoría
+## Methodological notes
 
-**Autor:** J. Soriano ([@JSoriano02](https://github.com/JSoriano02))
-**Tipo:** Trabajo de Fin de Máster (TFM)
-**Año:** 2025
+- **Stability vs binding are different magnitudes.** FoldX delta-delta-G quantifies folding stability; GNINA affinity quantifies ligand binding. They are reported separately and never combined into a single score.
+- **Replicates and uncertainty.** FoldX is run with 5 replicates per mutation so that every delta-delta-G carries a standard deviation; one-sample statistical tests are reported against H0: delta-delta-G = 0.
+- **Statistical vs biological significance.** These are treated as independent concepts: a result can be statistically significant without exceeding the biological relevance threshold (abs(delta-delta-G) > 0.5 kcal/mol), and vice versa.
+- **Docking validation.** Before trusting any mutant result, the protocol is validated by redocking the native ligand and checking RMSD < 2 Angstrom against the crystallographic pose.
+- **Robust box definition.** Docking uses `--autobox_ligand` centred on the crystallographic ligand, avoiding errors from a free ligand centred at the origin.
 
 ---
+
+## Reproducibility
+
+- All stochastic steps use a fixed seed (`params.seed`); GNINA exhaustiveness and number of modes are explicit parameters.
+- The full provenance (tool versions, replicates, thresholds, seed) is recorded in the final report.
+- Nextflow caching allows exact resumption with `-resume`; enabling Graphviz additionally produces the execution report, timeline and DAG.
+
+---
+
+## Authorship
+
+**Author:** J. Soriano ([@JSoriano02](https://github.com/JSoriano02))
+**Type:** Master's Thesis (Trabajo de Fin de Máster, TFM)
+**Year:** 2026
+
+See [`LICENSE`](LICENSE) for licensing terms.
