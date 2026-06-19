@@ -35,7 +35,7 @@ The goal of this project is to **predict the effect of point mutations in DYRK1B
 
 The whole workflow is orchestrated with **Nextflow (DSL2)**, providing reproducibility, modularity, caching, and the ability to resume interrupted runs (`-resume`).
 
-A distinctive feature of this pipeline is its emphasis on **scientific rigour**: it includes a docking validation control (redocking), statistical replicates for stability estimates, fixed random seeds for reproducibility, and a protein–ligand interaction analysis to explain the results mechanistically.
+A distinctive feature of this pipeline is its emphasis on **scientific rigour**: it includes a docking validation control (redocking), statistical replicates for stability estimates, fixed random seeds for reproducibility, a consistent docking-box definition shared by validation and production runs, and a protein–ligand interaction analysis to explain the results mechanistically.
 
 ---
 
@@ -52,7 +52,7 @@ Mutations in the kinase domain can alter the geometry of the binding site and th
 For each mutation the pipeline answers two independent questions:
 
 - **Does the mutation destabilise the protein?** → measured by FoldX as ΔΔG of folding stability (kcal/mol), with 5 replicates per mutation to quantify uncertainty.
-- **Does the mutation impair inhibitor binding?** → measured by GNINA as the change in docking affinity relative to the WT (kcal/mol).
+- **Does the mutation impair inhibitor binding?** → measured by GNINA as the change in docking affinity relative to the WT (kcal/mol), with the binding-pose confidence reported via the CNN score.
 
 Crucially, these two magnitudes are **kept separate** throughout the analysis (they measure different physical properties), and each mutation is finally **classified** by which of the two it affects: stability, binding, both, or neither.
 
@@ -69,8 +69,8 @@ The workflow is split into independent **Nextflow processes**, defined in `main.
 | `REDOCK_VALIDATION` | `modules/00_validate_docking.nf` | **Validation control:** redocks the crystallographic AZ191 onto the WT and computes RMSD vs the native pose. |
 | `FOLDX_MUTAGENESIS` | `modules/03_mutagenesis.nf` | Generates mutant structures with FoldX (5 replicates per mutation) and computes ΔΔG ± SD. |
 | `PREPARE_MEEKO` | `modules/04_prepare_meeko.nf` | Prepares receptors and ligand in PDBQT format (Meeko). |
-| `DOCKING_GNINA` | `modules/05_docking_gnina.nf` | Docks AZ191 onto WT and each mutant replica with GNINA. |
-| `EXTRACT_AND_REPORT` | `modules/06_analysis.nf` | Aggregates affinities, runs the interaction analysis (ProLIF), classifies mutations, computes statistics and generates the final report. |
+| `DOCKING_GNINA` | `modules/05_docking_gnina.nf` | Docks AZ191 onto WT and each mutant replica with GNINA, using the same box strategy as the validation. |
+| `EXTRACT_AND_REPORT` | `modules/06_analysis.nf` | Aggregates affinities and CNN scores, runs the interaction analysis (ProLIF), classifies mutations, computes statistics and generates the final report. |
 
 ---
 
@@ -83,7 +83,7 @@ flowchart TD
 
     C --> V[REDOCK_VALIDATION<br/>Redock crystal ligand + RMSD]
     D --> V
-    V -. RMSD &lt; 2 A .-> OK([Protocol validated])
+    V -. RMSD 0.27 A &lt; 2 A .-> OK([Protocol validated])
 
     D --> E[FOLDX_MUTAGENESIS<br/>5 replicates per mutation<br/>delta-delta-G +/- SD]
     B --> E
@@ -94,7 +94,7 @@ flowchart TD
     G[AZ191 ligand SDF] --> H[PREPARE_MEEKO<br/>PDBQT preparation]
     F --> H
 
-    H --> I[DOCKING_GNINA<br/>Affinity per structure]
+    H --> I[DOCKING_GNINA<br/>autobox - affinity + CNN]
     I --> J[EXTRACT_AND_REPORT<br/>Aggregation - ProLIF -<br/>classification - statistics]
     D --> J
 
@@ -215,7 +215,7 @@ Defined in `nextflow.config` and overridable from the command line (`--parameter
 | `stability_threshold` | `0.5` | abs(delta-delta-G) relevance threshold (kcal/mol). |
 | `affinity_threshold` | `0.5` | abs(delta-affinity) relevance threshold (kcal/mol). |
 
-The docking box is defined automatically via GNINA's `--autobox_ligand` around the crystallographic ligand position, which is more robust than hardcoded coordinates.
+**Docking box.** The search box is defined automatically via GNINA's `--autobox_ligand` (with `--autobox_add 4`) around the crystallographic ligand position. The **same box strategy is applied consistently** in both the redocking validation (`REDOCK_VALIDATION`) and the mutant docking (`DOCKING_GNINA`), so the validated protocol is exactly the one used to produce the mutant results. The legacy `box_x/y/z` and `box_size` parameters that remain in `nextflow.config` are **no longer used** by the docking processes and are kept only for reference.
 
 > Resources (executor, CPUs, memory) and the `gpu_intensive` label (`maxForks = 1`, tuned for a 6 GB GPU) are also set in `nextflow.config`.
 
@@ -227,15 +227,15 @@ After a successful run, `results/` contains:
 
 | Output | What it tells you |
 |--------|-------------------|
-| `redocking_validation.txt` | RMSD of the redocked AZ191 vs the native pose. **Read this first:** RMSD < 2 Angstrom means the docking protocol is validated. |
+| `redocking_validation.txt` | RMSD of the redocked AZ191 vs the native pose. **Read this first:** the protocol passes with RMSD ≈ 0.27 Å, well below the 2 Å threshold, confirming the docking method reproduces the crystallographic pose. |
 | `foldx_ddg_summary.csv` | delta-delta-G of folding stability per mutation (mean +/- SD over replicates). |
 | `*_ddg_replicas.csv` | Raw per-replicate delta-delta-G values for each mutation. |
 | `ddg_stability_plot.png` | Bar chart of delta-delta-G with error bars. |
 | `interactions_table.csv` | ProLIF protein-ligand interactions (H-bonds, hydrophobic contacts, etc.) for WT and mutants. |
-| Final report | Aggregated tables: binding affinity (GNINA), stability (FoldX), mutation classification, and statistics. |
+| Final report | Aggregated tables: binding affinity (GNINA Vina score **and CNN pose-confidence score**), folding stability (FoldX), mutation classification, and replicate statistics. |
 | ChimeraX/PyMOL script | Visualisation of the docked poses. |
 
-**Reading suggestion:** the WT structure is the reference row in every table. The *change* in affinity for each mutant relative to the WT is the key comparison — a positive delta-affinity means weaker binding. Combine this with the FoldX delta-delta-G to determine whether a mutation acts on stability, on binding, or on both.
+**Reading suggestion:** the WT structure is the reference row in every table. The *change* in affinity for each mutant relative to the WT is the key comparison — a positive delta-affinity means weaker binding. The **CNN score** indicates how confident the model is that a pose resembles a native binding mode (values near 1 = high confidence); it should be checked to confirm that mutant poses are reliable. Combine binding affinity with the FoldX delta-delta-G to determine whether a mutation acts on stability, on binding, or on both.
 
 ---
 
@@ -244,8 +244,9 @@ After a successful run, `results/` contains:
 - **Stability vs binding are different magnitudes.** FoldX delta-delta-G quantifies folding stability; GNINA affinity quantifies ligand binding. They are reported separately and never combined into a single score.
 - **Replicates and uncertainty.** FoldX is run with 5 replicates per mutation so that every delta-delta-G carries a standard deviation; one-sample statistical tests are reported against H0: delta-delta-G = 0.
 - **Statistical vs biological significance.** These are treated as independent concepts: a result can be statistically significant without exceeding the biological relevance threshold (abs(delta-delta-G) > 0.5 kcal/mol), and vice versa.
-- **Docking validation.** Before trusting any mutant result, the protocol is validated by redocking the native ligand and checking RMSD < 2 Angstrom against the crystallographic pose.
-- **Robust box definition.** Docking uses `--autobox_ligand` centred on the crystallographic ligand, avoiding errors from a free ligand centred at the origin.
+- **Docking validation.** Before trusting any mutant result, the protocol is validated by redocking the native ligand and checking RMSD < 2 Å against the crystallographic pose (achieved: ≈ 0.27 Å).
+- **Consistent, robust box definition.** Both the validation and the mutant docking use `--autobox_ligand` centred on the crystallographic ligand, rather than hardcoded coordinates. This guarantees that the validated protocol matches the production protocol and avoids artefacts from a free ligand centred at the origin.
+- **Pose confidence.** The GNINA CNN score is reported alongside the Vina affinity so that the reliability of each docked pose can be assessed, not just its predicted energy.
 
 ---
 
