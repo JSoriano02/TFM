@@ -83,7 +83,7 @@ flowchart TD
 
     C --> V[REDOCK_VALIDATION<br/>Redock crystal ligand + RMSD]
     D --> V
-    V -. RMSD 0.27 A &lt; 2 A .-> OK([Protocol validated])
+    V --> OK([Protocol validated<br/>RMSD 0.27 A])
 
     D --> E[FOLDX_MUTAGENESIS<br/>5 replicates per mutation<br/>delta-delta-G +/- SD]
     B --> E
