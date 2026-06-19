@@ -124,22 +124,30 @@ def aggregate_docking_results(results: Dict[str, dict]) -> Dict[str, dict]:
     WT has a single docking run; mutants have one run per FoldX replica.
     """
     from collections import defaultdict
-    groups: dict = defaultdict(list)
+    groups: dict = defaultdict(lambda: {"vina": [], "cnn": [], "file_path": None})
     for key, data in results.items():
-        groups[_base_mutation(key)].append(data["vina"])
+        base = _base_mutation(key)
+        groups[base]["vina"].append(data["vina"])
+        groups[base]["cnn"].append(data["cnn"])
+        if groups[base]["file_path"] is None:
+            groups[base]["file_path"] = data["file_path"]
 
     aggregated = {}
-    for base, vina_list in groups.items():
+    for base, group in groups.items():
+        vina_list = group["vina"]
+        cnn_list  = group["cnn"]
         n = len(vina_list)
         mean_vina = sum(vina_list) / n
-        sd_vina = (sum((v - mean_vina)**2 for v in vina_list) / (n - 1))**0.5 if n > 1 else 0.0
-        first_key = next(k for k in results if _base_mutation(k) == base)
+        sd_vina   = (sum((v - mean_vina)**2 for v in vina_list) / (n - 1))**0.5 if n > 1 else 0.0
+        mean_cnn  = sum(cnn_list) / n
+        sd_cnn    = (sum((v - mean_cnn)**2  for v in cnn_list)  / (n - 1))**0.5 if n > 1 else 0.0
         aggregated[base] = {
             "vina":      round(mean_vina, 3),
-            "vina_sd":   round(sd_vina, 3),
+            "vina_sd":   round(sd_vina,   3),
+            "cnn":       round(mean_cnn,  3),
+            "cnn_sd":    round(sd_cnn,    3),
             "n_docked":  n,
-            "cnn":       results[first_key]["cnn"],
-            "file_path": results[first_key]["file_path"],
+            "file_path": group["file_path"],
         }
     return aggregated
 
@@ -269,14 +277,18 @@ def generate_thermodynamic_report(
             # ------------------------------------------------------------------
             md.write("## 1. Binding affinity — GNINA (kcal/mol)\n\n")
             md.write("More negative Vina score indicates higher predicted affinity.\n\n")
-            md.write("| Mutation | Mean Vina (kcal/mol) | ± SD | n |\n")
-            md.write("|----------|---------------------|------|---|\n")
+            md.write("| Mutation | Mean Vina (kcal/mol) | ± SD | Mean CNN score | ± SD | n |\n")
+            md.write("|----------|---------------------|------|----------------|------|---|\n")
             for name, data in sorted_results:
-                sd_str = f"±{data['vina_sd']:.3f}" if data['n_docked'] > 1 else "—"
-                md.write(f"| {name} | {data['vina']:.2f} | {sd_str} | {data['n_docked']} |\n")
+                vina_sd_str = f"±{data['vina_sd']:.3f}" if data['n_docked'] > 1 else "—"
+                cnn_sd_str  = f"±{data['cnn_sd']:.3f}"  if data['n_docked'] > 1 else "—"
+                md.write(f"| {name} | {data['vina']:.2f} | {vina_sd_str} | {data['cnn']:.3f} | {cnn_sd_str} | {data['n_docked']} |\n")
 
             md.write("\n*Vina score*: more negative = higher predicted affinity. "
-                     "SD across docked replicas; WT has a single docking run.\n\n")
+                     "*CNN score*: predicted probability that the pose has RMSD < 2 Å relative to "
+                     "the native binding pose; higher values indicate greater confidence in the "
+                     "predicted binding mode. "
+                     "SD computed across docked replicas; WT has a single docking run.\n\n")
 
             # ------------------------------------------------------------------
             # Section 2: Folding stability (FoldX)
