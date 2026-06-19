@@ -5,21 +5,26 @@ process DOCKING_GNINA {
     input:
     path receptor_pdbqt
     path ligand_pdbqt
+    path complex_pdb    // crystallographic complex; used only to extract the reference binding site
 
     output:
     path "${receptor_pdbqt.baseName}_docked.sdf", emit: docked_sdf
 
     script:
     """
-    # Gnina is automatically found in the bin/ directory.
-    # CNN scoring explicitly set to 'rescore' to balance speed and accuracy on the RTX 2060
-    gnina -r ${receptor_pdbqt} -l ${ligand_pdbqt} \
-        --center_x ${params.box_x} --center_y ${params.box_y} --center_z ${params.box_z} \
-        --size_x ${params.box_size} --size_y ${params.box_size} --size_z ${params.box_size} \
-        --cnn_scoring rescore \
-        --seed ${params.seed} \
-        --exhaustiveness ${params.exhaustiveness} \
-        --num_modes ${params.num_modes} \
+    # Extract the crystallographic ligand to define the search box.
+    # Identical strategy to REDOCK_VALIDATION: centres the box on the real binding site
+    # coordinates rather than relying on manually measured params.box_x/y/z.
+    grep -E "^HETATM" ${complex_pdb} | grep " ${params.ligand_resname} " > crystal_ligand.pdb
+    echo "END" >> crystal_ligand.pdb
+
+    gnina -r ${receptor_pdbqt} -l ${ligand_pdbqt} \\
+        --autobox_ligand crystal_ligand.pdb \\
+        --autobox_add 4 \\
+        --cnn_scoring rescore \\
+        --seed ${params.seed} \\
+        --exhaustiveness ${params.exhaustiveness} \\
+        --num_modes ${params.num_modes} \\
         --out ${receptor_pdbqt.baseName}_docked.sdf
     """
 }

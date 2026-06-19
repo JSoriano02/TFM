@@ -36,7 +36,7 @@ workflow {
     prepared = PREPARE_MEEKO(all_receptors, file(params.ligand))
     
     // 5. Docking with Gnina
-    docking_results = DOCKING_GNINA(prepared.receptor_pdbqt, prepared.ligand_pdbqt)
+    docking_results = DOCKING_GNINA(prepared.receptor_pdbqt, prepared.ligand_pdbqt, file(params.wt_pdb))
     
     // 6. Full report: GNINA binding affinity, FoldX stability, ProLIF interactions,
     //    mutation classification and statistics with error bars
