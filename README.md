@@ -108,6 +108,8 @@ flowchart TD
 ```
 TFM/
 ├── bin/                       # Python helper scripts called by the processes
+│   ├── filter_mutations.py    #   Filter GDC missense mutations within the kinase domain
+│   ├── clean_pdb_foldx.py     #   Strict PDB cleaner for FoldX 4 compatibility
 │   ├── run_foldx.py           #   FoldX replicate execution + delta-delta-G aggregation
 │   ├── calc_rmsd.py           #   RMSD calculation for redocking validation
 │   └── generate_report.py     #   Final report, interactions, statistics
@@ -121,16 +123,28 @@ TFM/
 │   └── 06_analysis.nf
 ├── raw_data/                  # Input data (NOT version-controlled)
 │   ├── DYRK1B_AZ191_complex.pdb
-│   └── AZ191.sdf
+│   ├── AZ191.sdf
+│   └── DYRK1B_mutations.tsv
 ├── results/                   # Pipeline outputs
 ├── main.nf                    # Main workflow definition
 ├── nextflow.config            # Resources, parameters, profiles
+├── environment.yml            # Conda environment (pinned dependency versions)
 ├── .gitignore
 ├── README.md
 └── LICENSE
 ```
 
-> Script names under `bin/` are indicative; adjust them to match your repository if they differ.
+### Helper scripts (`bin/`)
+
+Each Nextflow process delegates its actual work to a Python script in `bin/` (Nextflow exposes this directory on the `PATH` automatically):
+
+| Script | Called by | What it does |
+|--------|-----------|--------------|
+| `filter_mutations.py` | `FILTER_MUTATIONS` | Reads the GDC mutation TSV, keeps only **missense** variants, restricts them to the DYRK1B kinase domain (residues 78–442), sorts by the number of affected cases and writes the top *N* (`-n`, default 3) to `filtered_mutations.csv`. |
+| `clean_pdb_foldx.py` | `CLEAN_STRUCTURE` | Strict PDB cleaner for FoldX 4: keeps only the first chain and the primary alternate conformation, maps modified residues to their standard counterparts (e.g. `PTR`→`TYR`, `SEP`→`SER`, `TPO`→`THR`, `MSE`→`MET`, `CSO`→`CYS`), drops any remaining non-standard molecules and pads every line to a strict 80-column width. |
+| `run_foldx.py` | `FOLDX_MUTAGENESIS` | Runs FoldX `RepairPDB` on the WT and then `BuildModel` for each mutation with `--runs` replicas (default 5). Parses the `Dif_` output into per-mutation replicate CSVs (`*_ddg_replicas.csv`), aggregates mean ± SD into `foldx_ddg_summary.csv`, and renames the replicate models to the `*_mutant.pdb` pattern expected downstream. |
+| `calc_rmsd.py` | `REDOCK_VALIDATION` | Computes the RMSD between the best redocked pose and the crystallographic reference ligand using RDKit `GetBestRMS` (heavy atoms only, symmetry-aware). Assigns bond orders from the ligand template, writes `redocking_validation.txt` and **exits with an error if RMSD exceeds the threshold**, halting the pipeline. |
+| `generate_report.py` | `EXTRACT_AND_REPORT` | Parses GNINA Vina/CNN scores, aggregates docking replicas, runs the ProLIF interaction analysis, classifies each mutation (stability / binding / both / neither), runs the FoldX replica statistics (Shapiro-Wilk + t-test/Wilcoxon) and emits the Markdown report, the ΔΔG plot, the interactions table and the ChimeraX visualisation script. |
 
 ---
 
@@ -145,10 +159,10 @@ TFM/
 | [Meeko](https://github.com/forlilab/Meeko) | Receptor/ligand preparation | Produces PDBQT |
 | [ProLIF](https://prolif.readthedocs.io/) | Protein-ligand interaction fingerprints | Used in the analysis step |
 | [RDKit](https://www.rdkit.org/) | Cheminformatics (RMSD, bond orders) | |
-| SciPy / pandas / matplotlib / seaborn | Statistics and plotting | |
+| SciPy / pandas / matplotlib | Statistics and plotting | |
 | Python >= 3.10 | Helper scripts | |
 
-> **FoldX** requires a free academic licence and must be installed manually and available on the `PATH`. The path to `rotabase.txt` is configurable.
+> **FoldX** requires a free academic licence and must be installed manually and available on the `PATH`. Its `rotabase.txt` data file is currently referenced by an absolute path in `modules/03_mutagenesis.nf`; adjust that path to point to your local copy.
 >
 > **Graphviz** is optional; install it if you want Nextflow to render the execution DAG and HTML reports (`sudo apt install graphviz`).
 
@@ -165,10 +179,11 @@ cd TFM
 curl -s https://get.nextflow.io | bash
 
 # 3. Dependencies are resolved automatically via Conda
-#    (conda.enabled = true in nextflow.config)
+#    (conda.enabled = true in nextflow.config); the pinned
+#    versions are documented in environment.yml
 ```
 
-FoldX and its `rotabase.txt` must be installed separately; set the path in `nextflow.config`.
+FoldX and its `rotabase.txt` must be installed separately; adjust the `rotabase.txt` path in `modules/03_mutagenesis.nf`.
 
 ---
 
@@ -180,7 +195,7 @@ The pipeline expects the following files in `raw_data/`:
 |------|-------------|
 | `DYRK1B_AZ191_complex.pdb` | Crystallographic structure of the DYRK1B-AZ191 complex (wild type). |
 | `AZ191.sdf` | Structure of the AZ191 inhibitor (ligand). |
-| *mutation table* | Tabular list of mutations to evaluate. |
+| `DYRK1B_mutations.tsv` | GDC-format mutation table (columns `consequence`, `protein_change`, `num_ssm_affected_cases`, …) from which the top missense mutations are selected. |
 
 These files are **not included** in the repository. The crystallographic ligand is identified internally by its residue name (`QS0`); the complex also contains manganese ions (`MN`) and a phosphotyrosine residue (`PTR`), which are filtered out when the ligand is extracted.
 
@@ -206,14 +221,17 @@ Defined in `nextflow.config` and overridable from the command line (`--parameter
 |-----------|---------|-------------|
 | `raw_dir` | `${projectDir}/raw_data` | Input data directory. |
 | `outdir` | `${projectDir}/results` | Output directory. |
+| `wt_pdb` | `${raw_dir}/DYRK1B_AZ191_complex.pdb` | Crystallographic WT complex PDB. |
+| `ligand` | `${raw_dir}/AZ191.sdf` | AZ191 ligand structure (SDF). |
+| `mutations_tsv` | `${raw_dir}/DYRK1B_mutations.tsv` | GDC mutation table (defined in `main.nf`). |
 | `ligand_resname` | `QS0` | Residue name of the crystallographic ligand. |
 | `foldx_runs` | `5` | FoldX replicates per mutation. |
 | `seed` | `42` | Random seed for GNINA (reproducibility). |
 | `exhaustiveness` | `16` | GNINA search exhaustiveness. |
 | `num_modes` | `9` | Number of docking poses generated. |
 | `rmsd_threshold` | `2.0` | Redocking validation threshold (Angstrom). |
-| `stability_threshold` | `0.5` | abs(delta-delta-G) relevance threshold (kcal/mol). |
-| `affinity_threshold` | `0.5` | abs(delta-affinity) relevance threshold (kcal/mol). |
+| `ddg_stability_threshold` | `0.5` | abs(delta-delta-G) relevance threshold (kcal/mol). |
+| `delta_affinity_threshold` | `0.5` | abs(delta-affinity) relevance threshold (kcal/mol). |
 
 **Docking box.** The search box is defined automatically via GNINA's `--autobox_ligand` (with `--autobox_add 4`) around the crystallographic ligand position. The **same box strategy is applied consistently** in both the redocking validation (`REDOCK_VALIDATION`) and the mutant docking (`DOCKING_GNINA`), so the validated protocol is exactly the one used to produce the mutant results. The legacy `box_x/y/z` and `box_size` parameters that remain in `nextflow.config` are **no longer used** by the docking processes and are kept only for reference.
 
@@ -223,17 +241,19 @@ Defined in `nextflow.config` and overridable from the command line (`--parameter
 
 ## Outputs and how to read them
 
-After a successful run, `results/` contains:
+After a successful run, `results/` contains numbered subdirectories that mirror the pipeline stages
+(`00_validation/`, `02_cleaned/`, `03_mutants/`, `04_prepared/`, `05_docking/`, `06_analysis/`), plus a
+`reports/` directory with the Nextflow execution report, trace, timeline and DAG. The key outputs are:
 
-| Output | What it tells you |
-|--------|-------------------|
-| `redocking_validation.txt` | RMSD of the redocked AZ191 vs the native pose. **Read this first:** the protocol passes with RMSD ≈ 0.27 Å, well below the 2 Å threshold, confirming the docking method reproduces the crystallographic pose. |
-| `foldx_ddg_summary.csv` | delta-delta-G of folding stability per mutation (mean +/- SD over replicates). |
-| `*_ddg_replicas.csv` | Raw per-replicate delta-delta-G values for each mutation. |
-| `ddg_stability_plot.png` | Bar chart of delta-delta-G with error bars. |
-| `interactions_table.csv` | ProLIF protein-ligand interactions (H-bonds, hydrophobic contacts, etc.) for WT and mutants. |
-| Final report | Aggregated tables: binding affinity (GNINA Vina score **and CNN pose-confidence score**), folding stability (FoldX), mutation classification, and replicate statistics. |
-| ChimeraX/PyMOL script | Visualisation of the docked poses. |
+| Output | Location | What it tells you |
+|--------|----------|-------------------|
+| `redocking_validation.txt` | `00_validation/` | RMSD of the redocked AZ191 vs the native pose. **Read this first:** the protocol passes with RMSD ≈ 0.27 Å, well below the 2 Å threshold, confirming the docking method reproduces the crystallographic pose. |
+| `foldx_ddg_summary.csv` | `03_mutants/` | delta-delta-G of folding stability per mutation (mean +/- SD over replicates). |
+| `*_ddg_replicas.csv` | `03_mutants/` | Raw per-replicate delta-delta-G values for each mutation. |
+| `ddg_stability_plot.png` | `06_analysis/` | Bar chart of delta-delta-G with error bars. |
+| `interactions_table.csv` | `06_analysis/` | ProLIF protein-ligand interactions (H-bonds, hydrophobic contacts, etc.) for WT and mutants. |
+| `thermodynamic_report.md` | `06_analysis/` | Final report. Aggregated tables: binding affinity (GNINA Vina score **and CNN pose-confidence score**), folding stability (FoldX), mutation classification, replicate statistics and a traceability section (tool versions, seed, thresholds). |
+| `visualize_interactions.cxc` | `06_analysis/` | ChimeraX command script to visualise the docked poses and receptor-ligand H-bonds. |
 
 **Reading suggestion:** the WT structure is the reference row in every table. The *change* in affinity for each mutant relative to the WT is the key comparison — a positive delta-affinity means weaker binding. The **CNN score** indicates how confident the model is that a pose resembles a native binding mode (values near 1 = high confidence); it should be checked to confirm that mutant poses are reliable. Combine binding affinity with the FoldX delta-delta-G to determine whether a mutation acts on stability, on binding, or on both.
 
