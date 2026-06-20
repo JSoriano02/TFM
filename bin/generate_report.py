@@ -3,6 +3,7 @@
 import argparse
 import re
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -367,9 +368,13 @@ def generate_thermodynamic_report(
                 md.write("Comparative table WT vs. mutants. ✓ = interaction present; – = absent.\n\n")
 
                 cols = interactions_df.columns.tolist()
-                header = "| Variant | " + " | ".join(
-                    f"{res} {itype}" for res, itype in cols
-                ) + " |"
+
+                def _fmt_col(col):
+                    # ProLIF columns are (ligand, residue, interaction); show residue + type.
+                    res, itype = col[-2], col[-1]
+                    return f"{res} {itype}"
+
+                header = "| Variant | " + " | ".join(_fmt_col(c) for c in cols) + " |"
                 separator = "|---|" + "|".join(["---"] * len(cols)) + "|"
                 md.write(header + "\n")
                 md.write(separator + "\n")
@@ -534,8 +539,12 @@ def analyze_prolif_interactions(
 ) -> Optional[pd.DataFrame]:
     """
     Computes protein-ligand interaction fingerprints with ProLIF for each variant.
-    Returns a DataFrame with rows = variants, columns = (residue, interaction_type).
-    Returns None if ProLIF is unavailable or fails for all variants.
+    Returns a DataFrame with rows = variants, columns = (ligand, residue, interaction).
+
+    Structures are protonated before fingerprinting:
+      - Elements are guessed for every receptor (FoldX mutant PDBs lack the element column).
+      - Explicit hydrogens (with coordinates) are added to receptor and ligand, which
+        ProLIF requires to detect hydrogen bonds.
     """
     try:
         import MDAnalysis as mda
@@ -547,11 +556,37 @@ def analyze_prolif_interactions(
 
     from rdkit import Chem as _Chem
 
+    def _prepare_protein(receptor_pdb: str):
+        u = mda.Universe(receptor_pdb)
+        # FoldX mutant PDBs carry no element column and the WT has no explicit H.
+        # Guess elements (as the RDKitConverter warning recommends) for every receptor.
+        u.guess_TopologyAttrs(context="default", to_guess=["elements"])
+        ag = u.select_atoms("protein")
+        # NoImplicit=False lets the converter accept a structure without pre-existing
+        # explicit hydrogens; AddHs then makes them explicit (with coordinates) so that
+        # ProLIF can perceive hydrogen-bond donors/acceptors.
+        rdkit_prot = ag.convert_to("RDKIT", NoImplicit=False)
+        rdkit_prot = _Chem.AddHs(rdkit_prot, addCoords=True)
+        return plf.Molecule.from_rdkit(rdkit_prot)
+
+    def _prepare_ligand(sdf_path: Path):
+        # sanitize=False to tolerate the implicit valences that GNINA writes in the SDF
+        suppl = _Chem.SDMolSupplier(str(sdf_path), sanitize=False, removeHs=False)
+        rdkit_lig = next((m for m in suppl if m is not None), None)
+        if rdkit_lig is None:
+            raise ValueError(f"no valid poses in {sdf_path}")
+        rdkit_lig.UpdatePropertyCache(strict=False)
+        _Chem.FastFindRings(rdkit_lig)
+        # Ensure explicit hydrogens (with coordinates) on the ligand as well.
+        rdkit_lig = _Chem.AddHs(rdkit_lig, addCoords=True)
+        return plf.Molecule.from_rdkit(rdkit_lig)
+
     receptor_map: Dict[str, str] = {}
     for pdb in [wt_pdb] + list(mutant_pdbs):
         receptor_map[Path(pdb).stem] = pdb
 
     frames: Dict[str, pd.Series] = {}
+    failed_variants: List[str] = []
 
     for sdf_str in sdf_files:
         sdf_path = Path(sdf_str)
@@ -561,20 +596,12 @@ def analyze_prolif_interactions(
         if receptor_pdb is None:
             print(f"Warning: no receptor PDB found for '{variant}'. "
                   "Skipping interactions for this variant.")
+            failed_variants.append(variant)
             continue
 
         try:
-            u_prot = mda.Universe(receptor_pdb)
-            protein_mol = plf.Molecule.from_mda(u_prot.select_atoms("protein"))
-
-            # sanitize=False to tolerate the implicit valences that GNINA writes in the SDF
-            suppl = _Chem.SDMolSupplier(str(sdf_path), sanitize=False, removeHs=False)
-            rdkit_lig = next((m for m in suppl if m is not None), None)
-            if rdkit_lig is None:
-                raise ValueError(f"no valid poses in {sdf_path}")
-            rdkit_lig.UpdatePropertyCache(strict=False)
-            _Chem.FastFindRings(rdkit_lig)
-            ligand_mol = plf.Molecule.from_rdkit(rdkit_lig)
+            protein_mol = _prepare_protein(receptor_pdb)
+            ligand_mol = _prepare_ligand(sdf_path)
 
             fp = plf.Fingerprint()
             fp.run_from_iterable([ligand_mol], protein_mol)
@@ -582,23 +609,42 @@ def analyze_prolif_interactions(
             df = fp.to_dataframe()
             if not df.empty:
                 frames[variant] = df.iloc[0]
+                print(f"ProLIF: '{variant}' -> {df.shape[1]} interaction(s) detected.")
+            else:
+                print(f"Warning: ProLIF detected NO interactions for '{variant}'.")
+                failed_variants.append(variant)
 
         except Exception as exc:
             print(f"Warning: ProLIF failed for '{variant}': {exc}")
+            failed_variants.append(variant)
             continue
 
-    # Always write the CSV even with no results: Nextflow declares it a mandatory output
+    # Always write the CSV: Nextflow declares it a mandatory output.
+    # Variants expose different interaction sets, so missing cells appear as NaN after
+    # the transpose; fill them with False so present/absent is unambiguous (NaN is truthy).
     result = pd.DataFrame(frames).T if frames else pd.DataFrame()
+    if not result.empty:
+        result = result.fillna(False)
     result.index.name = "variant"
     result.to_csv("interactions_table.csv")
 
-    if frames:
-        print(f"Interactions table saved to interactions_table.csv "
-              f"({len(result)} variants, {len(result.columns)} interactions)")
-    else:
-        print("Warning: ProLIF produced no results. interactions_table.csv written empty.")
+    if failed_variants:
+        print(f"Warning: ProLIF produced no interactions for "
+              f"{len(failed_variants)} variant(s): {', '.join(failed_variants)}")
 
-    return result if not result.empty else None
+    # Hard failure: an empty interactions table is NOT an acceptable result.
+    if not frames:
+        sys.exit(
+            "\n[ERROR] ProLIF produced NO interactions for ANY variant.\n"
+            "interactions_table.csv was written empty -- this is treated as a failure: "
+            "the analysis is NOT complete.\n"
+            "Check that the receptor structures are protonated and that the docked "
+            "poses overlap the binding site."
+        )
+
+    print(f"Interactions table saved to interactions_table.csv "
+          f"({len(result)} variants, {len(result.columns)} interactions)")
+    return result
 
 
 # ---------------------------------------------------------------------------
